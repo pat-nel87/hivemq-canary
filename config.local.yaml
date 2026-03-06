@@ -1,0 +1,30 @@
+broker:
+  host: "localhost"
+  port: 1883
+  tls: false
+  username: "demo"
+  password: "demo"
+
+canary:
+  interval: 10s
+  timeout: 3s
+  topic_prefix: "monitor/canary"
+  qos_levels: [0]
+
+alerts:
+  teams_webhook_url: "https://localhost/fake-webhook"
+  hourly_report:
+    enabled: false
+  rules:
+    - name: "broker_unreachable"
+      condition: "connection_failures"
+      threshold: 3
+      operator: ">"
+      severity: "critical"
+
+storage:
+  azure_blob:
+    enabled: false
+
+server:
+  port: 8080
