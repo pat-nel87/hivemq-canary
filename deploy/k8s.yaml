@@ -1,0 +1,146 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hivemq-canary
+  labels:
+    app: hivemq-canary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hivemq-canary
+  template:
+    metadata:
+      labels:
+        app: hivemq-canary
+    spec:
+      containers:
+        - name: hivemq-canary
+          image: your-acr.azurecr.io/hivemq-canary:latest
+          ports:
+            - containerPort: 8080
+              name: http
+          args:
+            - --config
+            - /app/config.yaml
+            - --log-level
+            - info
+          env:
+            - name: HIVEMQ_CANARY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: hivemq-canary-secrets
+                  key: canary-password
+            - name: TEAMS_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: hivemq-canary-secrets
+                  key: teams-webhook-url
+            - name: AZURE_STORAGE_ACCOUNT
+              valueFrom:
+                secretKeyRef:
+                  name: hivemq-canary-secrets
+                  key: azure-storage-account
+                  optional: true
+            - name: AZURE_STORAGE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hivemq-canary-secrets
+                  key: azure-storage-key
+                  optional: true
+          volumeMounts:
+            - name: config
+              mountPath: /app/config.yaml
+              subPath: config.yaml
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: hivemq-canary-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hivemq-canary
+  labels:
+    app: hivemq-canary
+spec:
+  selector:
+    app: hivemq-canary
+  ports:
+    - port: 8080
+      targetPort: http
+      name: http
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hivemq-canary-config
+data:
+  config.yaml: |
+    broker:
+      host: "your-cluster.s1.eu.hivemq.cloud"
+      port: 8883
+      tls: true
+      username: "canary-monitor"
+      password: "${HIVEMQ_CANARY_PASSWORD}"
+
+    canary:
+      interval: 30s
+      timeout: 10s
+      topic_prefix: "monitor/canary"
+      qos_levels: [0, 1]
+
+    alerts:
+      teams_webhook_url: "${TEAMS_WEBHOOK_URL}"
+      hourly_report:
+        enabled: true
+        interval: 1h
+        include_when_healthy: true
+      rules:
+        - name: "broker_unreachable"
+          condition: "connection_failures"
+          threshold: 3
+          operator: ">"
+          severity: "critical"
+        - name: "high_latency"
+          condition: "round_trip_p95_ms"
+          threshold: 500
+          operator: ">"
+          severity: "warning"
+        - name: "message_loss"
+          condition: "delivery_success_rate"
+          threshold: 0.95
+          operator: "<"
+          severity: "critical"
+        - name: "connection_instability"
+          condition: "reconnect_count"
+          threshold: 5
+          operator: ">"
+          severity: "warning"
+
+    storage:
+      azure_blob:
+        enabled: false
+
+    server:
+      port: 8080

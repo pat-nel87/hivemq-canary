@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HiveMQ Canary — {{ .BrokerHost }}</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.3/dist/cdn.min.js" defer></script>
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body x-data="dashboard()" x-init="init()">
+
+    <header>
+        <div class="header-content">
+            <h1>HiveMQ Canary</h1>
+            <div class="header-meta">
+                <span class="cluster-name">{{ .BrokerHost }}</span>
+                <span class="last-updated" x-text="'Updated: ' + lastUpdated"></span>
+                <span class="auto-refresh">
+                    <label>
+                        <input type="checkbox" x-model="autoRefresh" @change="toggleRefresh()">
+                        Auto-refresh (30s)
+                    </label>
+                </span>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <section class="status-cards">
+            <div class="card" :class="statusClass">
+                <div class="card-icon" x-text="statusIcon"></div>
+                <div class="card-body">
+                    <div class="card-label">Connection</div>
+                    <div class="card-value" x-text="snapshot.connected ? 'Connected' : 'Disconnected'"></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-icon">⏱️</div>
+                <div class="card-body">
+                    <div class="card-label">Round-trip P95</div>
+                    <div class="card-value" x-text="snapshot.round_trip_p95_ms.toFixed(1) + ' ms'"></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-icon">📨</div>
+                <div class="card-body">
+                    <div class="card-label">Delivery Rate</div>
+                    <div class="card-value" x-text="(snapshot.delivery_success_rate * 100).toFixed(1) + '%'"></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-icon">📈</div>
+                <div class="card-body">
+                    <div class="card-label">Uptime (1h)</div>
+                    <div class="card-value" x-text="snapshot.uptime_percent.toFixed(1) + '%'"></div>
+                </div>
+            </div>
+        </section>
+
+        <template x-if="Object.keys(activeAlerts).length > 0">
+            <section class="alerts-banner">
+                <h2>Active Alerts</h2>
+                <template x-for="(state, name) in activeAlerts" :key="name">
+                    <div class="alert-item">
+                        <span>🔴</span>
+                        <strong x-text="name"></strong>
+                        <span x-text="'value: ' + state.LastValue.toFixed(2)"></span>
+                        <span x-text="'since ' + new Date(state.FiredAt).toLocaleTimeString()"></span>
+                    </div>
+                </template>
+            </section>
+        </template>
+
+        <section class="charts">
+            <div class="chart-box">
+                <h2>Round-trip Latency</h2>
+                <canvas id="latencyChart"></canvas>
+            </div>
+            <div class="chart-box">
+                <h2>Message Delivery</h2>
+                <canvas id="deliveryChart"></canvas>
+            </div>
+        </section>
+
+        <section class="stats-section">
+            <h2>Snapshot (Last Hour)</h2>
+            <table class="stats-table">
+                <tr><td>Round-trip Avg</td><td x-text="snapshot.round_trip_avg_ms.toFixed(1) + ' ms'"></td></tr>
+                <tr><td>Round-trip P95</td><td x-text="snapshot.round_trip_p95_ms.toFixed(1) + ' ms'"></td></tr>
+                <tr><td>Round-trip Max</td><td x-text="snapshot.round_trip_max_ms.toFixed(1) + ' ms'"></td></tr>
+                <tr><td>Messages Sent</td><td x-text="snapshot.messages_sent"></td></tr>
+                <tr><td>Messages Received</td><td x-text="snapshot.messages_received"></td></tr>
+                <tr><td>Delivery Rate</td><td x-text="(snapshot.delivery_success_rate * 100).toFixed(1) + '%'"></td></tr>
+                <tr><td>Reconnects</td><td x-text="snapshot.reconnect_count"></td></tr>
+                <tr><td>Consecutive Failures</td><td x-text="snapshot.consecutive_failures"></td></tr>
+                <tr x-show="snapshot.last_error"><td>Last Error</td><td class="error-text" x-text="snapshot.last_error"></td></tr>
+            </table>
+        </section>
+    </main>
+
+    <script>
+    function dashboard() {
+        return {
+            snapshot: {{ jsonMarshal .Snapshot }},
+            activeAlerts: {{ jsonMarshal .ActiveAlerts }},
+            samples: {{ jsonMarshal .Samples }},
+            lastUpdated: new Date().toLocaleTimeString(),
+            autoRefresh: true,
+            refreshInterval: null,
+            latencyChart: null,
+            deliveryChart: null,
+
+            get statusClass() {
+                if (!this.snapshot.connected) return 'card-critical';
+                if (this.snapshot.uptime_percent < 100) return 'card-warning';
+                return 'card-healthy';
+            },
+            get statusIcon() {
+                if (!this.snapshot.connected) return '🔴';
+                if (this.snapshot.uptime_percent < 100) return '🟡';
+                return '🟢';
+            },
+
+            init() {
+                this.renderCharts();
+                this.toggleRefresh();
+            },
+
+            toggleRefresh() {
+                if (this.refreshInterval) clearInterval(this.refreshInterval);
+                this.refreshInterval = null;
+                if (this.autoRefresh) {
+                    this.refreshInterval = setInterval(() => this.fetchData(), 30000);
+                }
+            },
+
+            async fetchData() {
+                try {
+                    const [snapRes, histRes, alertRes] = await Promise.all([
+                        fetch('/api/metrics/current'),
+                        fetch('/api/metrics/history?window=1h'),
+                        fetch('/api/alerts')
+                    ]);
+                    this.snapshot = await snapRes.json();
+                    this.samples = await histRes.json();
+                    this.activeAlerts = await alertRes.json();
+                    this.lastUpdated = new Date().toLocaleTimeString();
+                    this.updateCharts();
+                } catch (err) {
+                    console.error('Refresh failed:', err);
+                }
+            },
+
+            renderCharts() {
+                const labels = this.samples.map(s => new Date(s.timestamp).toLocaleTimeString());
+
+                this.latencyChart = new Chart(
+                    document.getElementById('latencyChart').getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: 'Round-trip (ms)',
+                            data: this.samples.map(s => s.round_trip_ms),
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59,130,246,0.1)',
+                            fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        scales: {
+                            y: { beginAtZero: true, title: { display: true, text: 'ms' } },
+                            x: { ticks: { maxTicksLimit: 10 } }
+                        },
+                        plugins: { legend: { display: false } }
+                    }
+                });
+
+                this.deliveryChart = new Chart(
+                    document.getElementById('deliveryChart').getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels,
+                        datasets: [
+                            { label: 'Sent', data: this.samples.map(s => s.message_sent ? 1 : 0),
+                              borderColor: '#3b82f6', borderWidth: 2, pointRadius: 2, stepped: true },
+                            { label: 'Received', data: this.samples.map(s => s.message_received ? 1 : 0),
+                              borderColor: '#10b981', borderWidth: 2, pointRadius: 2, stepped: true }
+                        ]
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        scales: {
+                            y: { beginAtZero: true, max: 1.1, ticks: { callback: v => v === 1 ? 'OK' : 'Fail' } },
+                            x: { ticks: { maxTicksLimit: 10 } }
+                        }
+                    }
+                });
+            },
+
+            updateCharts() {
+                const labels = this.samples.map(s => new Date(s.timestamp).toLocaleTimeString());
+                if (this.latencyChart) {
+                    this.latencyChart.data.labels = labels;
+                    this.latencyChart.data.datasets[0].data = this.samples.map(s => s.round_trip_ms);
+                    this.latencyChart.update('none');
+                }
+                if (this.deliveryChart) {
+                    this.deliveryChart.data.labels = labels;
+                    this.deliveryChart.data.datasets[0].data = this.samples.map(s => s.message_sent ? 1 : 0);
+                    this.deliveryChart.data.datasets[1].data = this.samples.map(s => s.message_received ? 1 : 0);
+                    this.deliveryChart.update('none');
+                }
+            }
+        };
+    }
+    </script>
+</body>
+</html>

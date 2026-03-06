@@ -1,0 +1,58 @@
+broker:
+  host: "your-cluster.s1.eu.hivemq.cloud"
+  port: 8883
+  tls: true
+  username: "canary-monitor"
+  password: "${HIVEMQ_CANARY_PASSWORD}"
+  # client_id: auto-generated from hostname if omitted
+
+canary:
+  interval: 30s
+  timeout: 10s
+  topic_prefix: "monitor/canary"
+  qos_levels: [0, 1]
+
+alerts:
+  teams_webhook_url: "${TEAMS_WEBHOOK_URL}"
+
+  hourly_report:
+    enabled: true
+    interval: 1h
+    include_when_healthy: true
+
+  rules:
+    - name: "broker_unreachable"
+      condition: "connection_failures"
+      threshold: 3
+      operator: ">"
+      severity: "critical"
+
+    - name: "high_latency"
+      condition: "round_trip_p95_ms"
+      threshold: 500
+      operator: ">"
+      severity: "warning"
+
+    - name: "message_loss"
+      condition: "delivery_success_rate"
+      threshold: 0.95
+      operator: "<"
+      severity: "critical"
+
+    - name: "connection_instability"
+      condition: "reconnect_count"
+      threshold: 5
+      operator: ">"
+      severity: "warning"
+      window: 10m
+
+storage:
+  azure_blob:
+    enabled: false  # set true and provide creds to enable
+    container: "hivemq-metrics"
+    account_name: "${AZURE_STORAGE_ACCOUNT}"
+    account_key: "${AZURE_STORAGE_KEY}"
+    retention_days: 90
+
+server:
+  port: 8080
